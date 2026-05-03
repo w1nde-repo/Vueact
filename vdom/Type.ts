@@ -6,55 +6,27 @@ export enum VNodeType {
   COMPONENT = 3   // 组件节点
 }
 
+/**
+ * Patch Flags - 用于优化 diff 算法
+ * 编译时标记动态内容，运行时跳过静态内容对比
+ */
+export enum PatchFlags {
+  TEXT = 1,           // 动态文本内容
+  CLASS = 2,          // 动态 class
+  STYLE = 4,          // 动态 style
+  PROPS = 8,          // 动态属性
+  FULL_PROPS = 16,    // 所有属性动态
+  NEED_PATCH = 32,    // 需要深度对比
+  
+  // 优化标记（需手动使用）
+  SKIP = 64,          // 跳过 diff（纯静态）
+  ONCE = 128,         // 只渲染一次（首次后跳过）
+}
+
 export interface VNodeData {
-  Property?: {
-    id?: string;
-    class?: string;
-    style?: Record<string, string | number>;
-    value?: string;
-    checked?: boolean;
-    innerHTML?: string;
-    textContent?: string;
-  };
-  Attribute?: Record<string, string>;
-  vueactFunc?: {
-    // React 风格事件
-    onClick?: Function;
-    onInput?: Function;
-    onChange?: Function;
-    onBlur?: Function;
-    onFocus?: Function;
-    onKeyup?: Function;
-    onKeydown?: Function;
-    onSubmit?: Function;
-    onMouseover?: Function;
-    onMouseout?: Function;
-    onMouseenter?: Function;
-    onMouseleave?: Function;
-    onMousemove?: Function;
-    onMouseup?: Function;
-    onMousedown?: Function;
-    // Vue 风格事件
-    '@click'?: Function;
-    '@input'?: Function;
-    '@change'?: Function;
-    '@blur'?: Function;
-    '@focus'?: Function;
-    '@keyup'?: Function;
-    '@keydown'?: Function;
-    '@submit'?: Function;
-    // Vue 指令
-    'v-model'?: any;
-    'v-if'?: any;
-    'v-else'?: any;
-    'v-else-if'?: any;
-    'v-for'?: any;
-    'v-bind'?: any;
-    'v-html'?: any;
-    'v-text'?: any;
-    'v-show'?: any;
-  };
+  // 统一属性（自动判断 Property vs Attribute）
   props?: Record<string, any>;
+  // 组件事件
   emit?: Record<string, Function>;
 }
 
@@ -62,15 +34,12 @@ export interface VNode {
   tag: string;
   type: VNodeType;
   key: string;
-  stateRef: any;
-  nodeRef: any;
+  nodeRef: any;              // DOM 引用
   data: VNodeData;
   children?: VNode[];
-  __skip__?: boolean;
-  __once__?: boolean;
-  __static__?: boolean;
-  __isRoot__?: boolean;
-  __isComment__?: boolean;
+  patchFlag?: number;        // 动态标记
+  dynamicProps?: string[];   // 动态属性名列表
+  component?: Function;      // 组件函数（仅 COMPONENT 类型使用）
 }
 
 export function createVNode(
@@ -78,20 +47,18 @@ export function createVNode(
   type: VNodeType,
   key: string,
   data: VNodeData = {},
-  children?: VNode[]
+  children?: VNode[],
+  patchFlag?: number,
+  dynamicProps?: string[]
 ): VNode {
   return {
     tag,
     type,
     key,
-    stateRef: null,
     nodeRef: null,
     data,
     children,
-    __skip__: false,
-    __once__: false,
-    __static__: false,
-    __isRoot__: false,
-    __isComment__: false,
+    patchFlag,
+    dynamicProps,
   };
 }

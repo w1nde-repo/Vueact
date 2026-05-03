@@ -1,244 +1,300 @@
-// h 创建函数
-import { VNode, VNodeType, VNodeData, createVNode } from './Type';
+// h 创建函数 - 重构版：扁平化属性，自动判断 Property/Attribute
+import { VNode, VNodeType, VNodeData, createVNode, PatchFlags } from './Type';
 
-let keyCounter = 0;
+// v-model 标记
+const V_MODEL_VALUE = Symbol('_vModelValue');
 
-function generateKey(tag: string): string {
-  return `${tag}-${Date.now()}-${keyCounter++}`;
+/**
+ * 渲染上下文
+ */
+class RenderContext {
+  path: string[] = [];
+  index: number[] = [0];
+  
+  generateKey(tag: string): string {
+    const path = [...this.path, `${tag}[${this.index[this.index.length - 1] || 0}]`].join('/');
+    this.index[this.index.length - 1]++;
+    return path;
+  }
+  
+  pushContext(index: number = 0) {
+    this.path.push(String(index));
+    this.index.push(0);
+  }
+  
+  popContext() {
+    this.path.pop();
+    this.index.pop();
+  }
+  
+  reset() {
+    this.path = [];
+    this.index = [0];
+  }
 }
 
+const globalRenderContext = new RenderContext();
+
+export function beginRender() {
+  globalRenderContext.reset();
+}
+
+function generateKey(tag: string): string {
+  return globalRenderContext.generateKey(tag);
+}
+
+/**
+ * 分析 Patch Flag
+ */
+function analyzePatchFlag(props: Record<string, any> | null): number {
+  if (!props) return 0;
+  
+  if (props.skip) return PatchFlags.SKIP;
+  if (props.once) return PatchFlags.ONCE;
+  
+  let flag = 0;
+  const dynamicProps: string[] = [];
+  
+  for (const [key, value] of Object.entries(props)) {
+    // 跳过静态值
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      continue;
+    }
+    
+    // 函数类型（事件处理器）
+    if (typeof value === 'function') {
+      flag |= PatchFlags.NEED_PATCH;
+      continue;
+    }
+    
+    // 对象类型（style、class 对象等）
+    if (typeof value === 'object' && value !== null) {
+      if (key === 'class') {
+        flag |= PatchFlags.CLASS;
+        dynamicProps.push('class');
+      } else if (key === 'style') {
+        flag |= PatchFlags.STYLE;
+        dynamicProps.push('style');
+      } else {
+        flag |= PatchFlags.PROPS;
+        dynamicProps.push(key);
+      }
+    }
+  }
+  
+  if (dynamicProps.length > 3) {
+    flag = PatchFlags.FULL_PROPS;
+  }
+  
+  return flag;
+}
+
+/**
+ * 处理 v-model 指令
+ */
+function processVModel(props: Record<string, any>): Record<string, any> {
+  if (!('v-model' in props)) return props;
+  
+  const value = props['v-model'];
+  const isRef = value && typeof value === 'object' && 'value' in value;
+  const refValue = isRef ? value.value : value;
+  
+  const newProps = { ...props };
+  delete newProps['v-model'];
+  
+  // 设置 value/checked
+  if (typeof refValue === 'boolean') {
+    newProps.checked = refValue;
+  } else {
+    newProps.value = refValue;
+  }
+  
+  // 添加事件监听
+  const handler = (e: Event) => {
+    const target = e.target as HTMLInputElement;
+    const newValue = target.type === 'checkbox' ? target.checked : target.value;
+    if (isRef) {
+      value.value = newValue;
+    }
+  };
+  
+  newProps.onInput = handler;
+  newProps.onChange = handler;
+  
+  return newProps;
+}
+
+/**
+ * 处理 v-if/v-else-if/v-else
+ */
+function processCondition(props: Record<string, any>): boolean {
+  if ('v-if' in props) {
+    const value = props['v-if'];
+    const isRef = value && typeof value === 'object' && 'value' in value;
+    return isRef ? value.value : value;
+  }
+  return true;
+}
+
+/**
+ * 处理 v-for 指令
+ */
+function processVFor(
+  items: any[],
+  children: any[],
+  props: Record<string, any> | null
+): VNode[] | null {
+  const renderFn = children.find(child => typeof child === 'function');
+  if (!renderFn) return null;
+  
+  return items.map((item, index) => {
+    const key = props?.key ? `${props.key}-${index}` : `v-for-${index}`;
+    const result = renderFn(item, index);
+    if (result && typeof result === 'object') {
+      result.key = key;
+    }
+    return result;
+  });
+}
+
+/**
+ * h 函数 - 创建 VNode
+ */
 export function h(
   tag: string | Function,
   props: Record<string, any> | null = {},
   ...children: any[]
-): VNode {
+): VNode | null {
+  // 组件处理
   if (typeof tag === 'function') {
     return createComponentVNode(tag, props, children);
   }
 
-  const data: VNodeData = {};
+  // v-if 条件渲染
+  if (props && !processCondition(props)) {
+    return null;
+  }
 
-  if (props) {
-    const propertyProps: Record<string, any> = {};
-    const attributeProps: Record<string, string> = {};
-    const vueactFuncProps: Record<string, any> = {};
+  // 处理 v-model
+  let processedProps = props ? processVModel(props) : {};
+  
+  // 提取 key
+  const key = processedProps.key || generateKey(String(tag));
+  delete processedProps.key;
+  
+  // 处理 v-for
+  let vForResult: VNode[] | null = null;
+  if ('v-for' in processedProps) {
+    const items = processedProps['v-for'];
+    delete processedProps['v-for'];
+    if (Array.isArray(items)) {
+      vForResult = processVFor(items, children, props);
+    }
+  }
+  
+  // 标准化普通 children
+  let normalizedChildren: VNode[] = [];
+  if (!vForResult) {
+    normalizedChildren = children
+      .flat()
+      .filter(child => child != null && child !== false)
+      .map(child => {
+        if (typeof child === 'string' || typeof child === 'number') {
+          return createVNode(
+            String(child),
+            VNodeType.TEXT,
+            generateKey('text'),
+            { props: { textContent: String(child) } }
+          );
+        }
+        return child as VNode;
+      });
+  }
+  
+  // 分析 patch flag
+  const patchFlag = analyzePatchFlag(processedProps);
+  
+  // 构建 VNodeData
+  const data: VNodeData = {};
+  
+  if (Object.keys(processedProps).length > 0) {
+    data.props = processedProps;
+  }
+  
+  const finalChildren = vForResult || normalizedChildren;
+  
+  return createVNode(
+    String(tag),
+    VNodeType.ELEMENT,
+    key,
+    data,
+    finalChildren.length > 0 ? finalChildren : undefined,
+    patchFlag
+  );
+}
+
+/**
+ * 创建组件 VNode
+ */
+function createComponentVNode(
+  component: Function,
+  props: Record<string, any> | null = {},
+  children: any[]
+): VNode | null {
+  const data: VNodeData = {};
+  
+  if (props && Object.keys(props).length > 0) {
     const componentProps: Record<string, any> = {};
     const emitProps: Record<string, Function> = {};
-
+    
     for (const [key, value] of Object.entries(props)) {
-      if (key === 'key' || key === 'ref') {
-        continue;
-      }
-
-      if (key.startsWith('onUpdate:')) {
+      if (key === 'key' || key === 'ref') continue;
+      if (key.startsWith('onUpdate:') || (typeof value === 'function' && key.startsWith('on'))) {
         emitProps[key] = value;
-      } else if (key.startsWith('@')) {
-        vueactFuncProps[key] = value;
-      } else if (key.startsWith('on') && key.length > 2) {
-        vueactFuncProps[key] = value;
-      } else if (key.startsWith('v-')) {
-        vueactFuncProps[key] = value;
-      } else if (key === 'value' || key === 'checked' || key === 'innerHTML' || key === 'textContent') {
-        propertyProps[key] = value;
-      } else if (key === 'class' || key === 'style' || key === 'id') {
-        propertyProps[key] = value;
-      } else if (key.startsWith('data-') || key.startsWith('aria-')) {
-        attributeProps[key] = value;
       } else {
         componentProps[key] = value;
       }
     }
-
-    if (Object.keys(propertyProps).length > 0) {
-      data.Property = propertyProps;
-    }
-
-    if (Object.keys(attributeProps).length > 0) {
-      data.Attribute = attributeProps;
-    }
-
-    if (Object.keys(vueactFuncProps).length > 0) {
-      data.vueactFunc = vueactFuncProps;
-    }
-
+    
     if (Object.keys(componentProps).length > 0) {
       data.props = componentProps;
     }
-
     if (Object.keys(emitProps).length > 0) {
       data.emit = emitProps;
     }
   }
-
+  
+  // 标准化 children
   const normalizedChildren = children
     .flat()
     .filter(child => child != null && child !== false)
     .map(child => {
       if (typeof child === 'string' || typeof child === 'number') {
         return createVNode(
-          '#text',
+          String(child),
           VNodeType.TEXT,
           generateKey('text'),
-          {
-            Property: { textContent: String(child) }
-          }
+          { props: { textContent: String(child) } }
         );
       }
       return child as VNode;
     });
 
-  const key = props?.key || generateKey(String(tag));
-
-  return createVNode(
-    String(tag),
-    VNodeType.ELEMENT,
-    key,
+  const vnode = createVNode(
+    component.name || 'Anonymous',
+    VNodeType.COMPONENT,
+    props?.key || generateKey('component'),
     data,
     normalizedChildren.length > 0 ? normalizedChildren : undefined
   );
+  
+  // 保存组件函数，用于渲染时调用
+  vnode.component = component;
+  
+  return vnode;
 }
 
-
-function createComponentVNode(
-  component: Function,
-  props: Record<string, any> | null = {},
-  children: any[]
-): VNode {
-  const data: VNodeData = {};
-
-  if (props) {
-    const componentProps: Record<string, any> = {};
-    const emitProps: Record<string, Function> = {};
-
-    for (const [key, value] of Object.entries(props)) {
-      if (key === 'key' || key === 'ref') {
-        continue;
-      }
-      if (key.startsWith('onUpdate:')) {
-        emitProps[key] = value;
-      } else if (typeof value === 'function' && key.startsWith('on')) {
-        emitProps[key] = value;
-      } else {
-        componentProps[key] = value;
-      }
-    }
-
-    if (Object.keys(componentProps).length > 0) {
-      data.props = componentProps;
-    }
-
-    if (Object.keys(emitProps).length > 0) {
-      data.emit = emitProps;
-    }
-  }
-
-  // 执行组件函数，获取返回的 VNode
-  // 将 props 和 children 传递给组件函数
-  // 组件函数签名：function Component(props, children) { ... }
-  let componentResult: any;
-  try {
-    // 先处理 children，转换为 VNode 数组
-    const normalizedChildren = children
-      .flat()
-      .filter(child => child != null && child !== false)
-      .map(child => {
-        if (typeof child === 'string' || typeof child === 'number') {
-          return createVNode(
-            '#text',
-            VNodeType.TEXT,
-            generateKey('text'),
-            {
-              Property: { textContent: String(child) }
-            }
-          );
-        }
-        return child as VNode;
-      });
-    
-    // 执行组件函数，传递 props 和 children
-    componentResult = component(data.props || {}, normalizedChildren);
-  } catch (error) {
-    console.error(`[Vueact] Error rendering component "${component.name || 'Anonymous'}":`, error);
-    // 返回错误占位 VNode
-    const errorKey = generateKey('error');
-    const errorTextVNode = createVNode(
-      '#text',
-      VNodeType.TEXT,
-      generateKey('text'),
-      {
-        Property: {
-          textContent: `Error: Component "${component.name || 'Anonymous'}" failed to render`
-        }
-      }
-    );
-    return createVNode(
-      'div',
-      VNodeType.ELEMENT,
-      errorKey,
-      {
-        Property: {
-          style: { color: 'red', padding: '10px', border: '1px solid red' }
-        }
-      },
-      [errorTextVNode]
-    );
-  }
-  
-  // 处理组件返回值：支持 Fragment（数组）和单个 VNode
-  let resultChildren: VNode[];
-  if (Array.isArray(componentResult)) {
-    // Fragment：多个根节点
-    resultChildren = componentResult.filter(node => node != null && node !== false) as VNode[];
-  } else if (componentResult) {
-    // 单个 VNode
-    resultChildren = [componentResult];
-  } else {
-    // 组件没有返回值，使用传入的 children（slots）
-    resultChildren = children
-      .flat()
-      .filter(child => child != null && child !== false)
-      .map(child => {
-        if (typeof child === 'string' || typeof child === 'number') {
-          return createVNode(
-            '#text',
-            VNodeType.TEXT,
-            generateKey('text'),
-            {
-              Property: { textContent: String(child) }
-            }
-          );
-        }
-        return child as VNode;
-      });
-  }
-
-  const key = props?.key || generateKey('component');
-
-  return createVNode(
-    component.name || 'Component',
-    VNodeType.COMPONENT,
-    key,
-    data,
-    resultChildren.length > 0 ? resultChildren : undefined
-  );
-}
-
-export function Fragment(props: any, ...children: any[]): VNode[] {
-  const normalizedChildren = children
-    .flat()
-    .filter(child => child != null && child !== false);
-  
-  return normalizedChildren.map(child => {
-    if (typeof child === 'string' || typeof child === 'number') {
-      return createVNode(
-        '#text',
-        VNodeType.TEXT,
-        generateKey('text'),
-        {
-          Property: { textContent: String(child) }
-        }
-      );
-    }
-    return child as VNode;
-  });
+// Fragment 支持
+export function Fragment(props: any) {
+  return props.children;
 }

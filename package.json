@@ -1,34 +1,37 @@
 {
-  "name": "@veact/vueact",
-  "version": "0.0.1",
+  "name": "@winde/vueact",
+  "version": "0.0.9-alpha.0",
   "description": "Vueact framework core",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/winde/vueact"
+  },
   "type": "module",
-  "main": "./index.ts",
-  "types": "./index.ts",
+  "main": "./dist/vueact.cjs.js",
+  "module": "./dist/vueact.esm.js",
+  "browser": "./dist/vueact.global.js",
+  "types": "./dist/index.d.ts",
   "files": [
-    "index.ts",
-    "core",
-    "reactivity",
-    "vdom",
-    "renderer",
-    "diff",
-    "component",
-    "lifecycle",
-    "directives",
-    "event",
-    "utils"
+    "dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "test": "echo \"No tests yet\""
-  },
-  "dependencies": {
-    "@babel/core": "^7.29.0",
-    "@babel/generator": "^7.29.1",
-    "@babel/parser": "^7.29.0",
-    "@babel/traverse": "^7.29.0"
+    "build": "rollup -c",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "test": "echo \"No tests yet\"",
+    "update": "npm version patch && npm publish",
+    "update:alpha": "npm version prerelease --preid alpha && npm publish --tag alpha",
+    "update:rc": "npm version prerelease --preid rc && npm publish --tag rc"
   },
   "devDependencies": {
+    "@rollup/plugin-typescript": "^12.3.0",
+    "rollup": "^4.59.0",
     "typescript": "^5.0.0"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "tslib": "^2.8.1"
+  },
+  "license": "MIT"
 }

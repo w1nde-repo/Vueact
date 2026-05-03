@@ -1,1 +1,1 @@
-// 类型定义
+// Types file - router types removed
