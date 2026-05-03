@@ -218,10 +218,3 @@ export function updateElementProps(
     }
   }
 }
-
-/**
- * 设置文本内容
- */
-export function setTextContent(el: HTMLElement, text: string): void {
-  el.textContent = text;
-}

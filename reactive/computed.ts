@@ -16,9 +16,6 @@ export interface ComputedRef<T = any> extends Ref<T> {
  * @returns ComputedRef 对象
  */
 export function computed<T>(getter: () => T): ComputedRef<T> {
-  let dirty = true;
-  let value: T;
-  
   // 创建计算属性的 ref
   const computedRef: ComputedRef<T> = {
     _dirty: true,

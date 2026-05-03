@@ -11,37 +11,25 @@ export interface Ref<T = any> {
 }
 
 /**
- * 组件内使用的 ref 缓存
- * 自动缓存 ref，避免每次渲染都重新创建
+ * 组件内使用的 ref 缓存（局部 ref）
+ * 直接存储在组件函数的属性上，组件卸载时自动被 GC 回收
  */
-const componentRefs = new WeakMap<Function, Map<string, Ref<any>>>();
+// 🔥 核心修复：使用普通 Map 而不是 WeakMap，避免组件实例被垃圾回收导致 refsMap 丢失
+const componentRefs = new Map<Function, Map<string, Ref<any>>>();
 let currentComponent: Function | null = null;
 
 /**
- * 当前组件的 ref 调用顺序计数
+ * 当前组件的 ref 调用顺序计数（用于自动生成 key）
  */
-const refCallOrder = new Map<Function, number>();
+const refCallOrder = new WeakMap<Function, number>();
 
 /**
- * 设置当前组件上下文
+ * 设置当前组件上下文（在每次渲染前调用）
  */
 export function setCurrentComponent(component: Function | null) {
   currentComponent = component;
   if (component) {
-    // 检测条件渲染：如果组件已有缓存但 order 归零，说明有分支未执行
-    if (componentRefs.has(component)) {
-      const existingRefs = componentRefs.get(component)!;
-      const order = refCallOrder.get(component) || 0;
-      
-      if (order === 0 && existingRefs.size > 0) {
-        console.warn(
-          '[Vueact] 检测到条件渲染：组件内的 ref 调用顺序可能不一致，' +
-          '建议为 ref 手动指定 key，例如：ref(0, "myKey")'
-        );
-      }
-    }
-    
-    // 重置该组件的调用顺序计数
+    // 每次渲染前重置调用顺序计数，确保 ref 的 key 稳定
     refCallOrder.set(component, 0);
   }
 }
@@ -86,26 +74,63 @@ export function ref<T>(value: T, key?: string): Ref<T> {
 
 /**
  * 创建 ref 的内部函数
+ * 使用 Proxy 实现：{ref.count} 自动代理到 {ref.value.count}
  */
 function createRef<T>(value: T): Ref<T> {
-  const isObject = typeof value === 'object' && value !== null;
-  
-  const refObj: Ref<T> = {
-    _value: isObject ? reactive(value) : value,
-    get value() {
-      // 依赖收集
-      track(refObj, 'value');
-      return refObj._value;
+  let innerValue: T = (typeof value === 'object' && value !== null)
+    ? reactive(value as any) as T
+    : value;
+
+  const refObj = new Proxy({} as Ref<T>, {
+    get(_, key) {
+      if (key === '_value') return innerValue;
+      if (key === '__v_isRef') return true;
+      if (key === 'value') {
+        track(refObj, 'value');
+        // 如果 innerValue 是对象，访问其属性时也会追踪 reactive 的依赖
+        return innerValue;
+      }
+      // 未知属性代理到 _value（对象时有效）
+      if (typeof innerValue === 'object' && innerValue !== null && key in (innerValue as any)) {
+        track(refObj, 'value');
+        // 直接访问 innerValue[key]，会触发 reactive 的 track
+        return (innerValue as any)[key];
+      }
+      return undefined;
     },
-    set value(newValue) {
-      const isObject = typeof newValue === 'object' && newValue !== null;
-      refObj._value = isObject ? reactive(newValue) : newValue;
-      // 触发更新
-      trigger(refObj, 'value');
+    set(_, key, newValue) {
+      if (key === '_value' || key === 'value') {
+        const oldValue = innerValue;
+        innerValue = (typeof newValue === 'object' && newValue !== null)
+          ? reactive(newValue) as T
+          : newValue;
+        // 值变化时触发更新
+        if (oldValue !== innerValue) {
+          trigger(refObj, 'value');
+        }
+        return true;
+      }
+      // 未知属性写入代理到 _value
+      if (typeof innerValue === 'object' && innerValue !== null) {
+        (innerValue as any)[key] = newValue;
+        return true;
+      }
+      return true;
     },
-    __v_isRef: true
-  };
-  
+    has(_, key) {
+      if (key === '_value' || key === 'value' || key === '__v_isRef') return true;
+      if (typeof innerValue === 'object' && innerValue !== null) return key in (innerValue as any);
+      return false;
+    },
+    ownKeys(_) {
+      const base = ['_value', 'value', '__v_isRef'];
+      if (typeof innerValue === 'object' && innerValue !== null) {
+        return [...base, ...Object.keys(innerValue as any)];
+      }
+      return base;
+    },
+  });
+
   return refObj;
 }
 

@@ -47,21 +47,22 @@ export function track(target: any, key: string | symbol) {
  * @param key - 属性名
  */
 export function trigger(target: any, key: string | symbol) {
-  // 获取 depsMap
   const depsMap = targetMap.get(target);
-  if (!depsMap) {
-    return;
-  }
-  
-  // 收集所有需要触发的 effect
+  if (!depsMap) return;
+
   const effectsToRun = new Set<() => void>();
-  
-  // 遍历所有 key 的依赖
-  depsMap.forEach((deps, depKey) => {
-    deps.forEach(effect => effectsToRun.add(effect));
-  });
-  
-  // 执行所有依赖函数
+
+  const addEffects = (deps?: Set<() => void>) => {
+    if (deps) deps.forEach(e => effectsToRun.add(e));
+  };
+
+  // 触发该 key 的依赖
+  addEffects(depsMap.get(key));
+  // length / __keys__ 变更时触发所有依赖（数组/对象结构变化）
+  if (key === 'length' || key === '__keys__') {
+    depsMap.forEach(deps => addEffects(deps));
+  }
+
   effectsToRun.forEach(effect => effect());
 }
 
@@ -78,24 +79,21 @@ export function setActiveEffect(effect: (() => void) | null) {
  * @returns 清理函数
  */
 export function effect(fn: () => void): () => void {
+  let active = true;
   const effectFn = () => {
-    // 设置当前激活的 effect
+    if (!active) return;
+    const prevEffect = activeEffect;
     setActiveEffect(effectFn);
-    
     try {
-      // 执行函数（会触发 track 收集依赖）
       fn();
     } finally {
-      // 恢复 activeEffect
-      setActiveEffect(null);
+      setActiveEffect(prevEffect);
     }
   };
-  
-  // 立即执行一次
+
   effectFn();
-  
-  // 返回停止函数
+
   return () => {
-    setActiveEffect(null);
+    active = false;
   };
 }

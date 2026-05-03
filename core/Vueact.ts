@@ -1,5 +1,5 @@
 // Vueact 核心类
-import { h, Fragment, VNode, VNodeType, beginRender } from '../vdom';
+import { h, Fragment, VNode, beginRender } from '../vdom';
 // 虚拟 DOM 系统
 import { patch, mount } from '../vdom/patch';
 // 响应式系统
@@ -10,8 +10,7 @@ import {
   setCurrentLifecycleComponent,
   invokeMountedHook,
   invokeBeforeUpdateHook,
-  invokeUpdatedHook,
-  clearComponentLifecycle
+  invokeUpdatedHook
 } from '../lifecycle';
 // 路由系统
 import { createRouter, resetRouterViewDepth } from '../Router';
@@ -120,6 +119,7 @@ class Vueact {
                     } finally {
                         // 渲染完成后清除组件上下文
                         setCurrentComponent(null);
+                        setCurrentLifecycleComponent(null);
                     }
                 });
             } else {

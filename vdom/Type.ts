@@ -18,7 +18,6 @@ export enum PatchFlags {
   FULL_PROPS = 16,    // 所有属性动态
   NEED_PATCH = 32,    // 需要深度对比
   
-  // 优化标记（需手动使用）
   SKIP = 64,          // 跳过 diff（纯静态）
   ONCE = 128,         // 只渲染一次（首次后跳过）
 }
@@ -38,7 +37,6 @@ export interface VNode {
   data: VNodeData;
   children?: VNode[];
   patchFlag?: number;        // 动态标记
-  dynamicProps?: string[];   // 动态属性名列表
   component?: Function;      // 组件函数（仅 COMPONENT 类型使用）
 }
 
@@ -48,8 +46,7 @@ export function createVNode(
   key: string,
   data: VNodeData = {},
   children?: VNode[],
-  patchFlag?: number,
-  dynamicProps?: string[]
+  patchFlag?: number
 ): VNode {
   return {
     tag,
@@ -59,6 +56,5 @@ export function createVNode(
     data,
     children,
     patchFlag,
-    dynamicProps,
   };
 }

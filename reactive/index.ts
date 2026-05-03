@@ -35,7 +35,7 @@ export type { Ref } from './ref';
 export { reactive, isReactive } from './reactive';
 export type { Reactive } from './reactive';
 
-export { effect, track, trigger, activeEffect, setActiveEffect, targetMap } from './effect';
+export { effect, track, trigger } from './effect';
 
 export { computed } from './computed';
 export type { ComputedRef } from './computed';

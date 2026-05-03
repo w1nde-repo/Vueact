@@ -15,6 +15,9 @@ export function resetRouterViewDepth() {
   _routerViewDepth = 0;
 }
 
+// useRouter 单例缓存，避免每次渲染创建新 reactive 对象
+let _routerAPI: ReturnType<typeof createRouterAPI> | null = null;
+
 // Parse URL query string: "a=1&b=2" → { a: '1', b: '2' }
 function parseQuery(search: string): Record<string, string> {
   const query: Record<string, string> = {};
@@ -213,7 +216,7 @@ class Router {
     const name = matched[matched.length - 1]?.route?.name;
     const meta = matched[matched.length - 1]?.route?.meta;
 
-    // Update reactive currentRoute - 直接替换整个对象，确保响应式追踪
+    // 整体替换 value 触发单次 effect，避免 Object.assign 逐属性多次 trigger
     _currentRoute.value = {
       path: pathname,
       name,
@@ -221,7 +224,7 @@ class Router {
       params,
       query,
       matched
-    };
+    } as CurrentRoute;
 
     // Run after guards
     runGuards(matched, 'after');
@@ -292,34 +295,59 @@ export function createRouter(options: RouterOptions): Router {
   return router;
 }
 
-export function useRouter() {
-  // 返回 reactive 对象，确保组件能响应路由变化
-  return reactive({
-    get currentRoute() {
-      return _currentRoute.value;
+function createRouterAPI() {
+  const router = {
+    get path() { 
+      // 直接访问 _currentRoute.value，确保依赖追踪正确
+      return _currentRoute.value.path; 
+    },
+    get name() { 
+      return _currentRoute.value.name; 
+    },
+    get params() { 
+      // 返回普通对象，避免 reactive 包装
+      const p = _currentRoute.value.params;
+      return p ? { ...p } : {};
+    },
+    get query() { 
+      // 返回普通对象，避免 reactive 包装
+      const q = _currentRoute.value.query;
+      return q ? { ...q } : {};
+    },
+    get meta() { 
+      return _currentRoute.value.meta; 
     },
     push: (target: any) => _activeRouter ? _activeRouter.push(target) : console.warn('[Vueact Router] push called before router initialized'),
     replace: (path: string) => _activeRouter ? _activeRouter.replace(path) : console.warn('[Vueact Router] replace called before router initialized')
-  });
+  };
+  
+  // 不要包装成 reactive，让 getter 直接追踪 _currentRoute.value
+  return router;
+}
+
+export function useRouter() {
+  if (!_routerAPI) {
+    _routerAPI = createRouterAPI();
+  }
+  return _routerAPI;
 }
 
 export function RouterView() {
   const depth = _routerViewDepth++;
   const routeValue = _currentRoute.value;
   const matched = routeValue?.matched || [];
-  
-  // 防止无限递归：如果深度超过匹配的路由数量，返回 null
+
   if (depth >= matched.length) {
     return null;
   }
-  
-  const route = matched[depth];
 
+  const route = matched[depth];
   if (!route) {
     return null;
   }
 
   const params = matched.slice(0, depth + 1).reduce((acc: Record<string, string>, m: MatchedRoute) => ({ ...acc, ...m.params }), {});
 
-  return h(route.route.component, params);
+  // 用 route.path 作为 key，不同路由不用同一个组件实例
+  return h(route.route.component, { key: route.path, ...params });
 }

@@ -1,4 +1,4 @@
-import { ref, effect } from '../reactive';
+import { ref } from '../reactive';
 import { h, VNode } from '../vdom';
 
 // 懒加载状态管理
@@ -18,10 +18,20 @@ export interface LazyDogShowConfig {
   error?: () => VNode;
 }
 
-// 获取 loader 的唯一 ID
-let _idCounter = 0;
+// 获取 loader 的唯一 ID（使用 loader 函数的哈希，避免自增计数器导致的不稳定）
 function getLoaderId(loader: () => Promise<any>, identifier?: string): string {
-  return identifier || `lazydog-${++_idCounter}-${loader.toString().slice(0, 50)}`;
+  if (identifier) {
+    return identifier;
+  }
+  // 使用 loader 函数的字符串表示生成稳定 ID
+  const loaderStr = loader.toString();
+  let hash = 0;
+  for (let i = 0; i < loaderStr.length; i++) {
+    const char = loaderStr.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return `lazydog-${Math.abs(hash).toString(36)}-${loaderStr.slice(0, 30).replace(/\s+/g, '_')}`;
 }
 
 // 获取当前路由路径（支持 hash 和 history 模式）
@@ -32,20 +42,20 @@ function getCurrentPath(): string {
   return window.location.pathname || '/';
 }
 
-// 懒加载状态存储（使用 Map 保持状态持久化）
+// 懒加载状态存储（使用 Map 保持状态持久化，内部字段使用 ref 实现响应式）
 const lazyStateMap = new Map<string, {
-  isLoading: boolean;
+  isLoading: any;
   error: Error | null;
   resolvedComponent: any;
-  hasError: boolean; // 标记是否已失败，避免无限重试
+  hasError: boolean;
 }>();
 
 function getLazyState(id: string) {
   if (!lazyStateMap.has(id)) {
     lazyStateMap.set(id, {
-      isLoading: !componentCache.has(id),
+      isLoading: ref(!componentCache.has(id)),
       error: null,
-      resolvedComponent: null,
+      resolvedComponent: ref(null),
       hasError: false
     });
   }
@@ -64,11 +74,16 @@ function createLazyComponent(loader: () => Promise<any>, identifier?: string) {
     return wrapperCache.get(id);
   }
 
-  function LazyWrapper(props: any = {}) {
+  // 稳定的包装组件，wrapperCache 保证同一 loader 返回同一函数引用
+  // 外层 VNode key 由框架 getStableComponentKey 保证稳定，无需手动设 key
+  const LazyWrapper = function(props: any = {}) {
     const state = getLazyState(id);
 
     if (componentCache.has(id)) {
-      return h(componentCache.get(id), props);
+      const cachedComp = componentCache.get(id);
+      // 🔥 核心修复：给缓存组件也传递 key，保持组件实例稳定
+      const propsWithKey = { ...props, key: `lazydog-${id}` };
+      return h(cachedComp, propsWithKey);
     }
 
     if (!loadingMap.has(id) && !state.hasError) {
@@ -78,13 +93,13 @@ function createLazyComponent(loader: () => Promise<any>, identifier?: string) {
         .then((module: any) => {
           const comp = module?.default || module;
           componentCache.set(id, comp);
-          state.resolvedComponent = comp;
-          state.isLoading = false;
+          state.resolvedComponent.value = comp;
+          state.isLoading.value = false;
           loadingMap.delete(id);
         })
         .catch((err: Error) => {
           state.error = err;
-          state.isLoading = false;
+          state.isLoading.value = false;
           state.hasError = true;
           loadingMap.delete(id);
         });
@@ -95,7 +110,7 @@ function createLazyComponent(loader: () => Promise<any>, identifier?: string) {
     const config = findConfig(currentPath);
 
     // 优先使用局部配置的 loading，其次全局配置，最后默认
-    if (state.isLoading) {
+    if (state.isLoading.value) {
       if (config?.loading) return config.loading();
       if (globalLoading) return globalLoading();
       return h('div', { class: 'lazydog-loading', style: 'padding:20px;text-align:center;color:#999' }, '加载中...');
@@ -108,8 +123,18 @@ function createLazyComponent(loader: () => Promise<any>, identifier?: string) {
       return h('div', { class: 'lazydog-error', style: 'padding:20px;text-align:center;color:#f56c6c' }, '加载失败');
     }
 
-    return state.resolvedComponent ? h(state.resolvedComponent, props) : null;
-  }
+    // 🔥 核心修复：如果组件还没加载完成，返回一个稳定的占位节点，避免 diff 算法混乱
+    if (!state.resolvedComponent.value) {
+      return h('div', { style: 'display:none' }, '');
+    }
+    // 🔥 核心修复：给每个懒加载组件一个唯一的 key，让 diff 算法能够区分不同的 wrapper 实例
+    return h(state.resolvedComponent.value, { ...props, key: `lazydog-${id}` });
+  };
+  // 🔥 给 wrapper 一个稳定的名字，用于调试和标识
+  Object.defineProperty(LazyWrapper, 'name', {
+    value: `LazyWrapper_${id}`,
+    configurable: true
+  });
 
   // 缓存 wrapper
   wrapperCache.set(id, LazyWrapper);

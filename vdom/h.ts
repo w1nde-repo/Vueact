@@ -1,8 +1,6 @@
 // h 创建函数 - 重构版：扁平化属性，自动判断 Property/Attribute
 import { VNode, VNodeType, VNodeData, createVNode, PatchFlags } from './Type';
-
-// v-model 标记
-const V_MODEL_VALUE = Symbol('_vModelValue');
+import { isRef, unref } from '../reactive';
 
 /**
  * 渲染上下文
@@ -34,6 +32,11 @@ class RenderContext {
 }
 
 const globalRenderContext = new RenderContext();
+
+// 组件默认 key：直接用组件名，不依赖计数器（组件重渲染时不经过 beginRender，计数器会偏移）
+function getStableComponentKey(component: Function): string {
+  return component.name || 'Anonymous';
+}
 
 export function beginRender() {
   globalRenderContext.reset();
@@ -96,8 +99,7 @@ function processVModel(props: Record<string, any>): Record<string, any> {
   if (!('v-model' in props)) return props;
   
   const value = props['v-model'];
-  const isRef = value && typeof value === 'object' && 'value' in value;
-  const refValue = isRef ? value.value : value;
+  const refValue = unref(value);
   
   const newProps = { ...props };
   delete newProps['v-model'];
@@ -113,7 +115,7 @@ function processVModel(props: Record<string, any>): Record<string, any> {
   const handler = (e: Event) => {
     const target = e.target as HTMLInputElement;
     const newValue = target.type === 'checkbox' ? target.checked : target.value;
-    if (isRef) {
+    if (isRef(value)) {
       value.value = newValue;
     }
   };
@@ -129,9 +131,7 @@ function processVModel(props: Record<string, any>): Record<string, any> {
  */
 function processCondition(props: Record<string, any>): boolean {
   if ('v-if' in props) {
-    const value = props['v-if'];
-    const isRef = value && typeof value === 'object' && 'value' in value;
-    return isRef ? value.value : value;
+    return unref(props['v-if']);
   }
   return true;
 }
@@ -178,10 +178,10 @@ export function h(
   // 处理 v-model
   let processedProps = props ? processVModel(props) : {};
   
-  // 提取 key
-  const key = processedProps.key || generateKey(String(tag));
-  delete processedProps.key;
-  
+  // 🔥 核心修复：先保存 key
+  const originalKey = processedProps.key;
+  // 提取 key（用于元素节点）
+  const key = originalKey || generateKey(String(tag));
   // 处理 v-for
   let vForResult: VNode[] | null = null;
   if ('v-for' in processedProps) {
@@ -192,12 +192,13 @@ export function h(
     }
   }
   
-  // 标准化普通 children
+  // 标准化普通 children（自动解包 Ref）
   let normalizedChildren: VNode[] = [];
   if (!vForResult) {
     normalizedChildren = children
       .flat()
       .filter(child => child != null && child !== false)
+      .map(child => unref(child))
       .map(child => {
         if (typeof child === 'string' || typeof child === 'number') {
           return createVNode(
@@ -252,7 +253,7 @@ function createComponentVNode(
       if (key.startsWith('onUpdate:') || (typeof value === 'function' && key.startsWith('on'))) {
         emitProps[key] = value;
       } else {
-        componentProps[key] = value;
+        componentProps[key] = unref(value);
       }
     }
     
@@ -264,10 +265,11 @@ function createComponentVNode(
     }
   }
   
-  // 标准化 children
+  // 标准化 children（自动解包 Ref）
   const normalizedChildren = children
     .flat()
     .filter(child => child != null && child !== false)
+    .map(child => unref(child))
     .map(child => {
       if (typeof child === 'string' || typeof child === 'number') {
         return createVNode(
@@ -283,7 +285,7 @@ function createComponentVNode(
   const vnode = createVNode(
     component.name || 'Anonymous',
     VNodeType.COMPONENT,
-    props?.key || generateKey('component'),
+    props?.key || getStableComponentKey(component),
     data,
     normalizedChildren.length > 0 ? normalizedChildren : undefined
   );
